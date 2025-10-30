@@ -1,0 +1,70 @@
+name: CI pipeline
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get latest Keycloak version
+        id: keycloak
+        run: |
+          version=$(curl -s https://quay.io/api/v1/repository/keycloak/keycloak/tag/ \
+            | jq -r '.tags[].name' \
+            | grep -P '^\d+\.\d+\.\d+$' \
+            | sort -V \
+            | tail -n1)
+          echo "version=$version" | tee -a $GITHUB_OUTPUT
+
+      - name: Get latest theme version
+        id: theme
+        run: |
+          version=$(curl -s https://api.github.com/repos/NaaVRE/NaaVRE-keycloak-theme/releases/latest \
+            | jq -r .tag_name)
+          echo "version=$version" | tee -a $GITHUB_OUTPUT
+
+      - name: Check if image exists in GHCR
+        id: image
+        run: |
+          tag=ghcr.io/${{ github.repository }}:${{ steps.keycloak.outputs.version }}-${{ steps.theme.outputs.version }}
+          echo "tag=$tag" | tee -a $GITHUB_OUTPUT
+          if docker manifest inspect $tag > /dev/null 2>&1; then
+            echo "exists=true" | tee -a $GITHUB_OUTPUT
+          else
+            echo "exists=false" | tee -a $GITHUB_OUTPUT
+          fi
+
+      - name: Build docker
+        uses: docker/build-push-action@v6
+        if: steps.image.outputs.exists == 'false'
+        with:
+          context: .
+          file: Dockerfile
+          tags: ${{ steps.image.outputs.tag }}
+          build-args: |
+            KEYCLOAK_VERSION=${{ steps.keycloak.outputs.version }}
+            THEME_VERSION=${{ steps.theme.outputs.version }}
+          push: true
